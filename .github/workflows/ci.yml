@@ -57,7 +57,7 @@ jobs:
       - name: Build Caddy with module
         run: |
           xcaddy build \
-            --with github.com/avvertix/caddy-plausible-tracking=.
+            --with github.com/avvertix/caddy-plausible-analytics=.
         env:
           GOFLAGS: ""
 

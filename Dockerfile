@@ -6,7 +6,7 @@ COPY . /plausible-tracking
 
 # Build Caddy with the module substituted from local source
 RUN xcaddy build \
-    --with github.com/avvertix/caddy-plausible-tracking=/plausible-tracking
+    --with github.com/avvertix/caddy-plausible-analytics=/plausible-tracking
 
 # Stage 2: Runtime image
 FROM caddy:2.11.2

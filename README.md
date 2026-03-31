@@ -22,7 +22,7 @@ The original visitor's `User-Agent` and IP address are forwarded to Plausible so
 ### Using xcaddy
 
 ```bash
-xcaddy build --with github.com/avvertix/caddy-plausible-tracking
+xcaddy build --with github.com/avvertix/caddy-plausible-analytics
 ```
 
 ### Using Docker
@@ -120,5 +120,5 @@ Custom properties are opt-in. List the ones you want under `props`:
 go test -v -race ./...
 
 # Build Caddy locally with the module (requires xcaddy)
-xcaddy build --with github.com/avvertix/caddy-plausible-tracking=.
+xcaddy build --with github.com/avvertix/caddy-plausible-analytics=.
 ```

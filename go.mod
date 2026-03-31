@@ -1,4 +1,4 @@
-module github.com/avvertix/caddy-plausible-tracking
+module github.com/avvertix/caddy-plausible-analytics
 
 go 1.22.3
 
