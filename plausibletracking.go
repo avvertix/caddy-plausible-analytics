@@ -153,9 +153,21 @@ func (m *PlausiblePlugin) recordEvent(r *http.Request, status int, contentType s
 		return // skip typical static web assets
 	}
 
+	scheme := "http"
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	} else if r.TLS != nil {
+		scheme = "https"
+	}
+	host := r.Host
+	if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
+		host = fwdHost
+	}
+	absURL := scheme + "://" + host + r.URL.RequestURI()
+
 	event := EventPayload{
 		Name:     "pageview",
-		Url:      r.URL.RequestURI(),
+		Url:      absURL,
 		Domain:   m.DomainName,
 		Referrer: r.Referer(),
 		Props:    m.buildProps(r, contentType),

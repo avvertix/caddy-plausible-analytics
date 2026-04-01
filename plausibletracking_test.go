@@ -430,8 +430,8 @@ func TestRecordEvent_SendsCorrectPayload(t *testing.T) {
 		if ev.payload.Domain != "example.com" {
 			t.Errorf("payload.Domain = %q, want example.com", ev.payload.Domain)
 		}
-		if ev.payload.Url != "/blog/post?utm_source=test" {
-			t.Errorf("payload.Url = %q, want /blog/post?utm_source=test", ev.payload.Url)
+		if ev.payload.Url != "http://example.com/blog/post?utm_source=test" {
+			t.Errorf("payload.Url = %q, want http://example.com/blog/post?utm_source=test", ev.payload.Url)
 		}
 		if ev.payload.Referrer != "https://referrer.example.com/" {
 			t.Errorf("payload.Referrer = %q, want https://referrer.example.com/", ev.payload.Referrer)
