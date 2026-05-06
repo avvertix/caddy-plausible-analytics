@@ -17,7 +17,7 @@ import (
 // HTTP client that talks to targetURL (typically an httptest.Server URL).
 func newTestPlugin(targetURL string) *PlausiblePlugin {
 	return &PlausiblePlugin{
-		DomainName: "example.com",
+		DomainName: "example.localhost",
 		BaseURL:    targetURL,
 		logger:     zap.NewNop(),
 		client:     &http.Client{Timeout: 2 * time.Second},
@@ -407,8 +407,9 @@ func TestRecordEvent_SendsCorrectPayload(t *testing.T) {
 	plugin := newTestPlugin(server.URL)
 
 	r := httptest.NewRequest(http.MethodGet, "/blog/post?utm_source=test", nil)
+	r.Host = "example.localhost"
 	r.Header.Set("User-Agent", "TestBrowser/1.0")
-	r.Header.Set("Referer", "https://referrer.example.com/")
+	r.Header.Set("Referer", "https://referrer.example.localhost/")
 	r.RemoteAddr = "203.0.113.42:9000"
 
 	plugin.recordEvent(r, http.StatusOK, "")
@@ -427,14 +428,14 @@ func TestRecordEvent_SendsCorrectPayload(t *testing.T) {
 		if ev.payload.Name != "pageview" {
 			t.Errorf("payload.Name = %q, want pageview", ev.payload.Name)
 		}
-		if ev.payload.Domain != "example.com" {
-			t.Errorf("payload.Domain = %q, want example.com", ev.payload.Domain)
+		if ev.payload.Domain != "example.localhost" {
+			t.Errorf("payload.Domain = %q, want example.localhost", ev.payload.Domain)
 		}
-		if ev.payload.Url != "http://example.com/blog/post?utm_source=test" {
-			t.Errorf("payload.Url = %q, want http://example.com/blog/post?utm_source=test", ev.payload.Url)
+		if ev.payload.Url != "http://example.localhost/blog/post?utm_source=test" {
+			t.Errorf("payload.Url = %q, want http://example.localhost/blog/post?utm_source=test", ev.payload.Url)
 		}
-		if ev.payload.Referrer != "https://referrer.example.com/" {
-			t.Errorf("payload.Referrer = %q, want https://referrer.example.com/", ev.payload.Referrer)
+		if ev.payload.Referrer != "https://referrer.example.localhost/" {
+			t.Errorf("payload.Referrer = %q, want https://referrer.example.localhost/", ev.payload.Referrer)
 		}
 
 	case <-time.After(2 * time.Second):
@@ -579,8 +580,112 @@ func TestServeHTTP_DoesNotRecordForStaticAsset(t *testing.T) {
 	}
 }
 
+// TestServeHTTP_PlausibleUnreachable_ResponseStillServed verifies that a
+// connection-refused error from Plausible does not prevent the page from being
+// served: the tracking call runs in a goroutine and must never block ServeHTTP.
+func TestServeHTTP_PlausibleUnreachable_ResponseStillServed(t *testing.T) {
+	// Start then immediately close a server so its address is guaranteed to
+	// refuse connections.
+	unavailable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	unavailable.Close()
+
+	plugin := newTestPlugin(unavailable.URL)
+
+	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("page content"))
+		return nil
+	})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/about", nil)
+
+	if err := plugin.ServeHTTP(rec, r, next); err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("response status = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); body != "page content" {
+		t.Errorf("response body = %q, want %q", body, "page content")
+	}
+}
+
+// TestServeHTTP_PlausibleReturnsError_ResponseStillServed verifies that a
+// non-2xx response from Plausible does not affect the page response delivered
+// to the client.
+func TestServeHTTP_PlausibleReturnsError_ResponseStillServed(t *testing.T) {
+	plausibleServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer plausibleServer.Close()
+
+	plugin := newTestPlugin(plausibleServer.URL)
+
+	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("page content"))
+		return nil
+	})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/about", nil)
+
+	if err := plugin.ServeHTTP(rec, r, next); err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("response status = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); body != "page content" {
+		t.Errorf("response body = %q, want %q", body, "page content")
+	}
+}
+
+// TestServeHTTP_PlausibleHangs_ResponseNotBlocked verifies that a slow or
+// hanging Plausible endpoint does not delay the response to the client.
+// The goroutine must fire-and-forget so that ServeHTTP returns in well under
+// the Plausible client timeout.
+func TestServeHTTP_PlausibleHangs_ResponseNotBlocked(t *testing.T) {
+	plausibleServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(10 * time.Second)
+	}))
+	defer plausibleServer.Close()
+
+	plugin := newTestPlugin(plausibleServer.URL)
+	// Short timeout so the background goroutine doesn't outlive the test.
+	plugin.client = &http.Client{Timeout: 200 * time.Millisecond}
+
+	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("page content"))
+		return nil
+	})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/about", nil)
+
+	start := time.Now()
+	if err := plugin.ServeHTTP(rec, r, next); err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// ServeHTTP must return well before the Plausible request times out,
+	// proving it does not block on the goroutine.
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("ServeHTTP took %v — response appears blocked by Plausible call", elapsed)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("response status = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); body != "page content" {
+		t.Errorf("response body = %q, want %q", body, "page content")
+	}
+}
+
 func TestServeHTTP_PassesThroughNextError(t *testing.T) {
-	plugin := newTestPlugin("http://unused.example.com")
+	plugin := newTestPlugin("http://unused.example.localhost")
 
 	wantErr := caddyhttp.Error(http.StatusInternalServerError, nil)
 	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
@@ -600,7 +705,7 @@ func TestServeHTTP_PassesThroughNextError(t *testing.T) {
 
 func TestUnmarshalCaddyfile_ParsesDomainAndBaseURL(t *testing.T) {
 	input := `plausible {
-		domain_name example.com
+		domain_name example.localhost
 		base_url    https://custom.plausible.io
 	}`
 
@@ -609,8 +714,8 @@ func TestUnmarshalCaddyfile_ParsesDomainAndBaseURL(t *testing.T) {
 	if err := m.UnmarshalCaddyfile(d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if m.DomainName != "example.com" {
-		t.Errorf("DomainName = %q, want example.com", m.DomainName)
+	if m.DomainName != "example.localhost" {
+		t.Errorf("DomainName = %q, want example.localhost", m.DomainName)
 	}
 	if m.BaseURL != "https://custom.plausible.io" {
 		t.Errorf("BaseURL = %q, want https://custom.plausible.io", m.BaseURL)
@@ -619,7 +724,7 @@ func TestUnmarshalCaddyfile_ParsesDomainAndBaseURL(t *testing.T) {
 
 func TestUnmarshalCaddyfile_ParsesProps(t *testing.T) {
 	input := `plausible {
-		domain_name example.com
+		domain_name example.localhost
 		props       content_type device_type
 	}`
 
@@ -653,7 +758,7 @@ func TestUnmarshalCaddyfile_DomainNameOnly(t *testing.T) {
 
 func TestUnmarshalCaddyfile_UnknownDirectiveReturnsError(t *testing.T) {
 	input := `plausible {
-		domain_name example.com
+		domain_name example.localhost
 		unknown_key value
 	}`
 
@@ -678,7 +783,7 @@ func TestUnmarshalCaddyfile_MissingArgReturnsError(t *testing.T) {
 
 func TestUnmarshalCaddyfile_MissingPropsArgReturnsError(t *testing.T) {
 	input := `plausible {
-		domain_name example.com
+		domain_name example.localhost
 		props
 	}`
 
